@@ -1,70 +1,48 @@
 <?php
 require_once "../config/db.php";
+
 date_default_timezone_set('Indian/Antananarivo');
 
 /* ======================================================
    🔴 AUTO STOP SESSION
 ====================================================== */
 
-$bd->query("
-    UPDATE wifi_session
-    SET statut='terminée'
+$req = $bd->query("
+    SELECT *
+    FROM wifi_session
     WHERE statut='en_cours'
     AND heure_fin <= NOW()
 ");
 
-?>
+$sessionsExpirees = $req->fetchAll(PDO::FETCH_ASSOC);
 
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <title>WiFi Sessions</title>
-</head>
-<body>
+foreach($sessionsExpirees as $s){
 
-<h1>📡 Gestion Sessions WiFi</h1>
+    $sec =
+    strtotime($s['heure_fin']) -
+    strtotime($s['heure_debut']);
 
-<hr>
+    if($sec < 0){
+        $sec = 0;
+    }
 
-<!-- ======================================================
-     🔍 RECHERCHE + FILTRE
-====================================================== -->
+    $duree = ceil($sec / 60);
 
-<h2>🔍 Recherche / Filtre</h2>
+    $update = $bd->prepare("
+        UPDATE wifi_session
+        SET statut='terminée',
+            duree_sw=?
+        WHERE id_wifi_session=?
+    ");
 
-<form method="GET">
-
-    <input type="text"
-           name="search"
-           placeholder="Code voucher">
-
-    <select name="filtre">
-
-        <option value="">Tous</option>
-
-        <option value="en_cours">
-            En cours
-        </option>
-
-        <option value="terminée">
-            Terminée
-        </option>
-
-    </select>
-
-    <button type="submit">
-        OK
-    </button>
-
-</form>
-
-<hr>
-
-<?php
+    $update->execute([
+        $duree,
+        $s['id_wifi_session']
+    ]);
+}
 
 /* ======================================================
-   📋 QUERY SESSION
+   🔍 RECHERCHE + FILTRE
 ====================================================== */
 
 $where = "1=1";
@@ -74,38 +52,50 @@ if(!empty($_GET['search'])){
 
     $where .= " AND v.code LIKE ?";
 
-    $params[] = "%".$_GET['search']."%";
+    $params[] =
+    "%".$_GET['search']."%";
 }
 
 if(!empty($_GET['filtre'])){
 
     $where .= " AND ws.statut=?";
 
-    $params[] = $_GET['filtre'];
+    $params[] =
+    $_GET['filtre'];
 }
+
+/* ======================================================
+   📋 QUERY SESSION
+====================================================== */
 
 $sql = "
 SELECT ws.*,
-       v.code
+       v.code,
+       w.nom_wifi,
+       w.bande
 FROM wifi_session ws
+
 LEFT JOIN voucher v
-ON ws.id_voucher = v.id_voucher
+ON ws.id_voucher=v.id_voucher
+
+LEFT JOIN wifi w
+ON ws.id_wifi=w.id_wifi
+
 WHERE $where
+
 ORDER BY ws.id_wifi_session DESC
 ";
 
 $req = $bd->prepare($sql);
+
 $req->execute($params);
 
-$sessions = $req->fetchAll(PDO::FETCH_ASSOC);
+$sessions =
+$req->fetchAll(PDO::FETCH_ASSOC);
 
-?>
-
-<!-- ======================================================
-     📊 STATISTIQUES
-====================================================== -->
-
-<?php
+/* ======================================================
+   📊 STATISTIQUES
+====================================================== */
 
 $active = $bd->query("
     SELECT COUNT(*)
@@ -119,25 +109,147 @@ $finished = $bd->query("
     WHERE statut='terminée'
 ")->fetchColumn();
 
+$paid = $bd->query("
+    SELECT COUNT(*)
+    FROM wifi_session
+    WHERE statut='payé'
+")->fetchColumn();
+
 $revenu = $bd->query("
     SELECT SUM(prix_total)
     FROM wifi_session
 ")->fetchColumn();
 
+/* ======================================================
+   📌 DERNIÈRE SESSION
+====================================================== */
+
+$last = $bd->query("
+    SELECT ws.*,
+           v.code,
+           w.nom_wifi,
+           w.bande
+    FROM wifi_session ws
+
+    LEFT JOIN voucher v
+    ON ws.id_voucher=v.id_voucher
+
+    LEFT JOIN wifi w
+    ON ws.id_wifi=w.id_wifi
+
+    ORDER BY ws.id_wifi_session DESC
+    LIMIT 1
+")->fetch(PDO::FETCH_ASSOC);
+
 ?>
 
-<h2>📊 Statistiques</h2>
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Gestion WiFi Sessions</title>
+</head>
+<body>
 
-<p>🟢 Sessions actives : <?= $active ?></p>
-
-<p>🔴 Sessions terminées : <?= $finished ?></p>
-
-<p>💰 Revenu total : <?= $revenu ?> Ar</p>
+<h1>📡 Gestion WiFi Sessions</h1>
 
 <hr>
 
 <!-- ======================================================
-     📋 TABLE SESSION
+     🔍 RECHERCHE / FILTRE
+====================================================== -->
+
+<h2>🔍 Recherche / Filtre</h2>
+
+<form method="GET">
+
+    <input type="text"
+           name="search"
+           placeholder="Code voucher"
+           value="<?= $_GET['search'] ?? '' ?>">
+
+    <select name="filtre">
+
+        <option value="">
+            Tous
+        </option>
+
+        <option value="en_cours">
+            En cours
+        </option>
+
+        <option value="terminée">
+            Terminée
+        </option>
+
+        <option value="payé">
+            Payé
+        </option>
+
+    </select>
+
+    <button type="submit">
+        Rechercher
+    </button>
+
+</form>
+
+<hr>
+
+<!-- ======================================================
+     📊 STATISTIQUES
+====================================================== -->
+
+<h2>📊 Statistiques</h2>
+
+<table border="1" cellpadding="10">
+
+<tr>
+
+    <th>
+        Sessions actives
+    </th>
+
+    <th>
+        Sessions terminées
+    </th>
+
+    <th>
+        Sessions payées
+    </th>
+
+    <th>
+        Revenu total
+    </th>
+
+</tr>
+
+<tr>
+
+    <td>
+        🟢 <?= $active ?>
+    </td>
+
+    <td>
+        🔴 <?= $finished ?>
+    </td>
+
+    <td>
+        💰 <?= $paid ?>
+    </td>
+
+    <td>
+        💵 <?= $revenu ?? 0 ?> Ar
+    </td>
+
+</tr>
+
+</table>
+
+<hr>
+
+<!-- ======================================================
+     📋 LISTE SESSIONS
 ====================================================== -->
 
 <h2>📋 Liste Sessions WiFi</h2>
@@ -147,6 +259,10 @@ $revenu = $bd->query("
 <tr>
 
     <th>ID</th>
+
+    <th>WiFi</th>
+
+    <th>Bande</th>
 
     <th>Voucher</th>
 
@@ -160,24 +276,46 @@ $revenu = $bd->query("
 
     <th>Prix</th>
 
+    <th>Adresse IP</th>
+
+    <th>Appareil</th>
+
     <th>Statut</th>
 
 </tr>
+
+<?php if(count($sessions) > 0){ ?>
 
 <?php foreach($sessions as $s){ ?>
 
 <tr>
 
-    <td><?= $s['id_wifi_session'] ?></td>
+    <td>
+        <?= $s['id_wifi_session'] ?>
+    </td>
 
-    <td><?= $s['code'] ?></td>
+    <td>
+        <?= $s['nom_wifi'] ?>
+    </td>
 
-    <td><?= $s['heure_debut'] ?></td>
+    <td>
+        <?= $s['bande'] ?>
+    </td>
 
-    <td><?= $s['heure_fin'] ?></td>
+    <td>
+        <?= $s['code'] ?>
+    </td>
+
+    <td>
+        <?= $s['heure_debut'] ?>
+    </td>
+
+    <td>
+        <?= $s['heure_fin'] ?>
+    </td>
 
     <!-- ======================================================
-         ⏱️ TEMPS RESTANT
+         ⏳ TEMPS RESTANT
     ====================================================== -->
 
     <td>
@@ -191,11 +329,13 @@ $revenu = $bd->query("
 
         if($restant > 0){
 
-            $h = floor($restant / 3600);
+            $h =
+            floor($restant / 3600);
 
-            $m = floor(($restant % 3600) / 60);
+            $m =
+            floor(($restant % 3600) / 60);
 
-            echo "⏳ ".$h."h ".$m."min";
+            echo "⏳ ".$h."h ".$m." min";
 
         }else{
 
@@ -211,16 +351,89 @@ $revenu = $bd->query("
 
     </td>
 
-    <td><?= $s['duree'] ?> min</td>
-
-    <td><?= $s['prix_total'] ?> Ar</td>
+    <!-- ======================================================
+         ⏱️ DURÉE
+    ====================================================== -->
 
     <td>
 
-        <?= ($s['statut']=='en_cours')
-            ? '🟢 En cours'
-            : '🔴 Terminée'
-        ?>
+    <?php
+
+    if($s['statut'] == 'en_cours'){
+
+        $sec =
+        time() -
+        strtotime($s['heure_debut']);
+
+        if($sec < 0){
+            $sec = 0;
+        }
+
+        $minutes =
+        ceil($sec / 60);
+
+    }else{
+
+        $minutes =
+        $s['duree_sw'] ?? 0;
+    }
+
+    $heure =
+    floor($minutes / 60);
+
+    $minute =
+    $minutes % 60;
+
+    echo $heure."h ".$minute." min";
+
+    ?>
+
+    </td>
+
+    <td>
+        <?= $s['prix_total'] ?? 0 ?> Ar
+    </td>
+
+    <td>
+        <?= $s['adresse_ip'] ?>
+    </td>
+
+    <td>
+        <?= $s['appareil'] ?>
+    </td>
+
+    <td>
+
+    <?php
+
+    if($s['statut']=='en_cours'){
+
+        echo "🟢 En cours";
+
+    }elseif($s['statut']=='payé'){
+
+        echo "💰 Payé";
+
+    }else{
+
+        echo "🔴 Terminée";
+    }
+
+    ?>
+
+    </td>
+
+</tr>
+
+<?php } ?>
+
+<?php }else{ ?>
+
+<tr>
+
+    <td colspan="12">
+
+        ❌ Aucune session trouvée
 
     </td>
 
@@ -233,40 +446,107 @@ $revenu = $bd->query("
 <hr>
 
 <!-- ======================================================
-     📈 DERNIÈRE SESSION
+     📌 DERNIÈRE SESSION
 ====================================================== -->
 
-<h2>📈 Dernière Session</h2>
+<h2>📌 Dernière Session</h2>
 
-<?php
+<?php if($last){ ?>
 
-$last = $bd->query("
-    SELECT ws.*,
-           v.code
-    FROM wifi_session ws
-    LEFT JOIN voucher v
-    ON ws.id_voucher=v.id_voucher
-    ORDER BY ws.id_wifi_session DESC
-    LIMIT 1
-")->fetch(PDO::FETCH_ASSOC);
+<table border="1" cellpadding="10">
 
-if($last){
+<tr>
 
-?>
+    <th>
+        WiFi
+    </th>
 
-<p>🎟️ Voucher :
-<b><?= $last['code'] ?></b></p>
+    <th>
+        Bande
+    </th>
 
-<p>⏱️ Début :
-<?= $last['heure_debut'] ?></p>
+    <th>
+        Voucher
+    </th>
 
-<p>⌛ Fin :
-<?= $last['heure_fin'] ?></p>
+    <th>
+        Début
+    </th>
 
-<p>💰 Prix :
-<?= $last['prix_total'] ?> Ar</p>
+    <th>
+        Fin
+    </th>
+
+    <th>
+        Prix
+    </th>
+
+    <th>
+        Statut
+    </th>
+
+</tr>
+
+<tr>
+
+    <td>
+        <?= $last['nom_wifi'] ?>
+    </td>
+
+    <td>
+        <?= $last['bande'] ?>
+    </td>
+
+    <td>
+        <?= $last['code'] ?>
+    </td>
+
+    <td>
+        <?= $last['heure_debut'] ?>
+    </td>
+
+    <td>
+        <?= $last['heure_fin'] ?>
+    </td>
+
+    <td>
+        <?= $last['prix_total'] ?? 0 ?> Ar
+    </td>
+
+    <td>
+
+    <?php
+
+    if($last['statut']=='en_cours'){
+
+        echo "🟢 En cours";
+
+    }elseif($last['statut']=='payé'){
+
+        echo "💰 Payé";
+
+    }else{
+
+        echo "🔴 Terminée";
+    }
+
+    ?>
+
+    </td>
+
+</tr>
+
+</table>
+
+<?php }else{ ?>
+
+<p>
+❌ Aucune session disponible
+</p>
 
 <?php } ?>
+
+<hr>
 
 </body>
 </html>

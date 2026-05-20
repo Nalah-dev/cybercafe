@@ -1,72 +1,29 @@
 <?php
 require_once "../config/db.php";
 date_default_timezone_set('Indian/Antananarivo');
-?>
 
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <title>Cybercafé - Session PRO</title>
-</head>
-<body>
-
-<h1>💻 Gestion Cybercafé (Ticket System)</h1>
-
-<hr>
-
-<!-- ======================================================
-     ➕ AJOUT CLIENT
-====================================================== -->
-<h2>➕ Ajouter Client</h2>
-
-<?php
-if(isset($_POST['add_client'])){
-
-    $bd->prepare("
-        INSERT INTO client (nom, prenom, telephone)
-        VALUES (?, ?, ?)
-    ")->execute([
-        $_POST['nom'],
-        $_POST['prenom'],
-        $_POST['telephone']
-    ]);
-
-    echo "✅ Client ajouté<br>";
-}
-?>
-
-<form method="POST">
-    <input type="text" name="nom" placeholder="Nom" required>
-    <input type="text" name="prenom" placeholder="Prénom" required>
-    <input type="text" name="telephone" placeholder="Téléphone" required>
-    <button type="submit" name="add_client">Ajouter</button>
-</form>
-
-<hr>
-
-<!-- ======================================================
-     🟢 START SESSION (HEURE + MINUTE)
-====================================================== -->
-<h2>🟢 Démarrer Session</h2>
-
-<?php
+/* ======================================================
+   🟢 START SESSION
+====================================================== */
 if(isset($_POST['start'])){
 
     $id_client = $_POST['id_client'];
     $id_poste = $_POST['id_poste'];
 
-    $heures = $_POST['heures'];
-    $minutes = $_POST['minutes'];
+    // 🔥 LIMIT HEURE / MINUTE
+    $heures = (int)$_POST['heures'];
+    $minutes = (int)$_POST['minutes'];
 
-    // conversion en minutes
+    if($heures > 23) $heures = 23;
+    if($minutes > 59) $minutes = 59;
+
     $duree_prevue = ($heures * 60) + $minutes;
 
     if($duree_prevue <= 0){
         die("❌ Durée invalide");
     }
 
-    // check poste libre
+    // poste libre check
     $check = $bd->prepare("SELECT etat FROM poste WHERE id_poste=?");
     $check->execute([$id_poste]);
     $etat = $check->fetchColumn();
@@ -75,204 +32,259 @@ if(isset($_POST['start'])){
         die("❌ Poste occupé");
     }
 
-    // heure fin automatique
-    $heure_fin = date('Y-m-d H:i:s', strtotime("+$duree_prevue minutes"));
+    // session check
+    $check2 = $bd->prepare("
+        SELECT COUNT(*) FROM session
+        WHERE id_poste=? AND statut='en_cours'
+    ");
+    $check2->execute([$id_poste]);
 
-    // insert session
+    if($check2->fetchColumn() > 0){
+        die("❌ Session déjà active");
+    }
+
+    $heure_fin = date('Y-m-d H:i:s', strtotime("+$duree_prevue minutes"));
+    $prix = ($duree_prevue / 60) * 2000;
+
     $bd->prepare("
         INSERT INTO session
-        (heure_debut, heure_fin, statut, id_client, id_poste, duree_prevue)
-        VALUES (NOW(), ?, 'en_cours', ?, ?, ?)
+        (heure_debut, heure_fin, statut, id_client, id_poste, duree_prevue, prix_total)
+        VALUES (NOW(), ?, 'en_cours', ?, ?, ?, ?)
     ")->execute([
         $heure_fin,
         $id_client,
         $id_poste,
-        $duree_prevue
+        $duree_prevue,
+        $prix
     ]);
 
-    // update poste
-    $bd->prepare("
-        UPDATE poste SET etat='occupé'
-        WHERE id_poste=?
-    ")->execute([$id_poste]);
+    $bd->prepare("UPDATE poste SET etat='occupé' WHERE id_poste=?")
+        ->execute([$id_poste]);
 
-    echo "✅ Session démarrée ($heures h $minutes min)";
+    echo "✅ Session démarrée";
 }
-?>
 
-<form method="POST">
+/* ======================================================
+   ➕ PROLONGATION SESSION (FIXED)
+====================================================== */
+if(isset($_POST['prolonger'])){
 
-    <!-- CLIENT -->
-    <select name="id_client" required>
-        <option value="">Client</option>
-        <?php
-        $clients = $bd->query("SELECT * FROM client");
-        foreach($clients as $c){
-            echo "<option value='{$c['id_client']}'>
-                    {$c['nom']} {$c['prenom']}
-                  </option>";
-        }
-        ?>
-    </select>
+    $id_session = $_POST['id_session'];
+    $heures = (int)$_POST['heures'];
+    $minutes = (int)$_POST['minutes'];
 
-    <!-- POSTE -->
-    <select name="id_poste" required>
-        <option value="">Poste libre</option>
-        <?php
-        $postes = $bd->query("SELECT * FROM poste WHERE etat='libre'");
-        foreach($postes as $p){
-            echo "<option value='{$p['id_poste']}'>
-                    Poste {$p['num_poste']}
-                  </option>";
-        }
-        ?>
-    </select>
+    if($heures > 23) $heures = 23;
+    if($minutes > 59) $minutes = 59;
 
-    <!-- HEURE -->
-    <input type="number" name="heures" placeholder="Heures" min="0" required>
+    $ajout = ($heures * 60) + $minutes;
 
-    <!-- MINUTE -->
-    <input type="number" name="minutes" placeholder="Minutes" min="0" max="59" required>
+    if($ajout <= 0){
+        die("❌ Valeur invalide");
+    }
 
-    <button type="submit" name="start">Démarrer</button>
-</form>
+    $s = $bd->prepare("SELECT * FROM session WHERE id_session=?");
+    $s->execute([$id_session]);
+    $data = $s->fetch(PDO::FETCH_ASSOC);
 
-<hr>
+    if(!$data || $data['statut'] != 'en_cours'){
+        die("❌ Session introuvable");
+    }
 
-<!-- ======================================================
-     🔴 AUTO STOP
-====================================================== -->
-<?php
+    $new_fin = date('Y-m-d H:i:s', strtotime($data['heure_fin']." +$ajout minutes"));
+    $new_duree = $data['duree_prevue'] + $ajout;
+    $new_prix = $data['prix_total'] + (($ajout/60)*2000);
+
+    $bd->prepare("
+        UPDATE session
+        SET heure_fin=?,
+            duree_prevue=?,
+            prix_total=?,
+            prolongation = IFNULL(prolongation,0) + ?
+        WHERE id_session=?
+    ")->execute([
+        $new_fin,
+        $new_duree,
+        $new_prix,
+        $ajout,
+        $id_session
+    ]);
+
+    echo "✅ Prolongation réussie";
+}
+
+/* ======================================================
+   🔴 AUTO STOP
+====================================================== */
 $bd->query("
     UPDATE session
-    SET statut='terminée',
-        heure_fin=NOW()
+    SET statut='terminée'
     WHERE statut='en_cours'
     AND heure_fin <= NOW()
 ");
+
+/* ======================================================
+   🟢 AUTO LIBERATION POSTE
+====================================================== */
+$bd->query("
+    UPDATE poste
+    SET etat='libre'
+    WHERE id_poste IN (
+        SELECT id_poste FROM session WHERE statut='terminée'
+    )
+");
+
+/* ======================================================
+   📋 LISTE
+====================================================== */
+$resultat = $bd->query("
+SELECT s.*,
+       c.nom AS client_nom,
+       c.prenom AS client_prenom,
+       p.nom_poste
+FROM session s
+LEFT JOIN client c ON s.id_client=c.id_client
+LEFT JOIN poste p ON s.id_poste=p.id_poste
+ORDER BY s.id_session DESC
+")->fetchAll(PDO::FETCH_ASSOC);
+
+/* ======================================================
+   📊 STATS
+====================================================== */
+$active = $bd->query("SELECT COUNT(*) FROM session WHERE statut='en_cours'")->fetchColumn();
+$terminee = $bd->query("SELECT COUNT(*) FROM session WHERE statut='terminée'")->fetchColumn();
+$revenu = $bd->query("SELECT IFNULL(SUM(prix_total),0) FROM session")->fetchColumn();
 ?>
 
-<hr>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Sessions Cybercafé</title>
+</head>
+<body>
 
-<!-- ======================================================
-     🔍 RECHERCHE
-====================================================== -->
-<h2>🔍 Recherche / Filtre</h2>
+<h1>💻 Sessions Cybercafé</h1>
 
-<form method="GET">
-    <input type="text" name="search" placeholder="Client ou ID">
+<!-- START -->
+<h2>🟢 Démarrer Session</h2>
 
-    <select name="filtre">
-        <option value="">Tous</option>
-        <option value="en_cours">En cours</option>
-        <option value="terminée">Terminée</option>
-    </select>
+<form method="POST">
 
-    <button type="submit">OK</button>
+<!-- CLIENT -->
+<label>👤 Client :</label>
+<select name="id_client" required>
+    <option value="">-- Choisir un client --</option>
+
+    <?php
+    $clients = $bd->query("
+        SELECT c.*
+        FROM client c
+        LEFT JOIN session s 
+            ON c.id_client = s.id_client 
+            AND s.statut = 'en_cours'
+        WHERE s.id_client IS NULL
+    ");
+
+    foreach($clients as $c){
+        echo "<option value='{$c['id_client']}'>
+                {$c['nom']} {$c['prenom']}
+              </option>";
+    }
+    ?>
+</select>
+
+<br><br>
+
+<!-- POSTE -->
+<label>💻 Poste :</label>
+<select name="id_poste" required>
+    <option value="">-- Choisir un poste --</option>
+
+    <?php
+    $postes = $bd->query("
+        SELECT p.*
+        FROM poste p
+        LEFT JOIN session s 
+            ON p.id_poste = s.id_poste 
+            AND s.statut = 'en_cours'
+        WHERE s.id_poste IS NULL
+    ");
+
+    foreach($postes as $p){
+        echo "<option value='{$p['id_poste']}'>
+                {$p['nom_poste']}
+              </option>";
+    }
+    ?>
+</select>
+
+
+<input type="number" name="heures" placeholder="Heures (max 23)" min="0" max="23" >
+<input type="number" name="minutes" placeholder="Minutes (max 59)" min="0" max="59">
+
+<button name="start">Start</button>
 </form>
 
 <hr>
 
-<?php
-$where = "1=1";
-$params = [];
+<!-- PROLONGATION -->
+<h2>➕ Prolongation</h2>
 
-if(!empty($_GET['search'])){
-    $where .= " AND (c.nom LIKE ? OR s.id_session LIKE ?)";
-    $params[] = "%".$_GET['search']."%";
-    $params[] = "%".$_GET['search']."%";
-}
+<form method="POST">
+<input type="number" name="id_session" placeholder="ID session" required>
+<input type="number" name="heures" placeholder="Heures" min="0" max="23" required>
+<input type="number" name="minutes" placeholder="Minutes" min="0" max="59" required>
+<button name="prolonger">Prolonger</button>
+</form>
 
-if(!empty($_GET['filtre'])){
-    $where .= " AND s.statut = ?";
-    $params[] = $_GET['filtre'];
-}
+<hr>
 
-$sql = "
-SELECT s.*,
-       c.nom AS client_nom,
-       c.prenom AS client_prenom,
-       p.num_poste
-FROM session s
-LEFT JOIN client c ON s.id_client = c.id_client
-LEFT JOIN poste p ON s.id_poste = p.id_poste
-WHERE $where
-ORDER BY s.id_session DESC
-";
-
-$req = $bd->prepare($sql);
-$req->execute($params);
-$resultat = $req->fetchAll(PDO::FETCH_ASSOC);
-?>
-
-<!-- ======================================================
-     📊 STATS
-====================================================== -->
-<?php
-$active = $bd->query("SELECT COUNT(*) FROM session WHERE statut='en_cours'")->fetchColumn();
-$terminee = $bd->query("SELECT COUNT(*) FROM session WHERE statut='terminée'")->fetchColumn();
-$revenu = $bd->query("SELECT SUM(prix_total) FROM session")->fetchColumn();
-?>
-
+<!-- STATS -->
 <h2>📊 Statistiques</h2>
 
-<p>🟢 Actives : <?= $active ?></p>
-<p>🔴 Terminées : <?= $terminee ?></p>
-<p>💰 Revenu : <?= $revenu ?> Ar</p>
+<table border="1" cellpadding="10" style="border-collapse:collapse; width:300px;">
 
-<hr>
+    <tr>
+        <th>Indicateur</th>
+        <th>Valeur</th>
+    </tr>
 
-<!-- ======================================================
-     📋 TABLE SESSION
-====================================================== -->
-<h2>📋 Sessions</h2>
+    <tr>
+        <td>🟢 Sessions Actives</td>
+        <td><?= $active ?></td>
+    </tr>
 
-<table border="1" cellpadding="10">
+    <tr>
+        <td>🔴 Sessions Terminées</td>
+        <td><?= $terminee ?></td>
+    </tr>
 
-<tr>
-    <th>ID</th>
-    <th>Client</th>
-    <th>Poste</th>
-    <th>Début</th>
-    <th>Fin</th>
-    <th>Durée</th>
-    <th>Prix</th>
-    <th>Statut</th>
-</tr>
-
-<?php foreach($resultat as $s){
-
-    $duree = $s['duree_prevue'];
-    $prix = ($duree / 60) * 2000;
-
-?>
-
-<tr>
-
-    <td><?= $s['id_session'] ?></td>
-    <td><?= $s['client_nom'].' '.$s['client_prenom'] ?></td>
-    <td><?= $s['num_poste'] ?></td>
-    <td><?= $s['heure_debut'] ?></td>
-    <td><?= $s['heure_fin'] ?></td>
-
-    <td>
-        <?= floor($duree/60) ?>h <?= $duree%60 ?>min
-    </td>
-
-    <td><?= $prix ?> Ar</td>
-
-    <td>
-        <?= ($s['statut']=='en_cours') ? "🟢 En cours" : "🔴 Terminée" ?>
-    </td>
-
-</tr>
-
-<?php } ?>
+    <tr>
+        <td>💰 Revenu Total</td>
+        <td><?= $revenu ?> Ar</td>
+    </tr>
 
 </table>
-
 <hr>
 
+<!-- TABLE -->
+<table border="1">
+<tr>
+<th>ID</th><th>Client</th><th>Poste</th><th>Début</th><th>Fin</th><th>Durée</th><th>Prix</th><th>Statut</th>
+</tr>
+
+<?php foreach($resultat as $s){ ?>
+<tr>
+<td><?= $s['id_session'] ?></td>
+<td><?= $s['client_nom']." ".$s['client_prenom'] ?></td>
+<td><?= $s['nom_poste'] ?></td>
+<td><?= $s['heure_debut'] ?></td>
+<td><?= $s['heure_fin'] ?></td>
+<td><?= floor($s['duree_prevue']/60) ?>h <?= $s['duree_prevue']%60 ?>m</td>
+<td><?= $s['prix_total'] ?> Ar</td>
+<td><?= $s['statut'] ?></td>
+</tr>
+<?php } ?>
 
 </table>
 
